@@ -1,0 +1,14 @@
+
+/**/.ipynb_checkpoints
+__pycache__
+/ckpt
+/res
+*.mp4
+*.png
+*.zip
+*.pt
+*.pth
+/dataset
+*.pkl
+/results
+*.pickle
