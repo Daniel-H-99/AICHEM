@@ -34,7 +34,7 @@ import random
 from rdkit import Chem
 from rdkit.Chem.Descriptors import ExactMolWt
 from rdkit.Chem.EnumerateStereoisomers import GetStereoisomerCount
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 def main(args):
     
@@ -81,8 +81,7 @@ def main(args):
     ########## Prepare data ##########
     PAD_IDX = 54
     NOISE_IDX = 55
-
-    class NoiseMolDataset(Dataset):
+    class NoisyMolDataset(Dataset):
         def __init__(self, smi_list, c_to_i):
             self.c_to_i = c_to_i
             encoded_smi_list = self.encode_smiles(smi_list)
@@ -107,94 +106,17 @@ def main(args):
 
         def __getitem__(self, idx):
             idx = self.shuffled_idx[idx]
+            l = self.length_list[idx]
+            num_noise = int(args.noise_portion * 2 * (l - 1))
+            idx_noise = np.concatenate((np.random.choice(l - 1, num_noise, replace=False), np.random.choice(l - 1, num_noise, replace=False)), axis=0) # 2 * num_noise
+            noisy_seq = np.tile(self.seq_list[idx], (2, 1)) # 2 x l
+            noisy_seq[np.tile(np.arange(2), (num_noise, 1)).T.flatten(), idx_noise] = NOISE_IDX
+            noisy_seq = torch.from_numpy(noisy_seq)
             sample = dict()
-            sample['len'] = self.length_list[idx]
-            sample['seq'] = self.seq_list[idx]
+            sample['len'] = [l, l] # 2
+            sample['seq'] = [noisy_seq[0], noisy_seq[1]] # 2 x l
             return sample
 
-    class MolDataset(Dataset):
-        def __init__(self, smi_list, prop_list, c_to_i, noisy=False):
-            self.noisy = noisy
-            self.c_to_i = c_to_i
-            encoded_smi_list = self.encode_smiles(smi_list)
-            self.prop_list = prop_list
-            self.length_list = []
-            for sequence in encoded_smi_list:
-                self.length_list.append(len(sequence))
-            self.length_list = torch.from_numpy(np.array(self.length_list))
-            self.seq_list = encoded_smi_list
-            self.prop_list = torch.tensor(self.prop_list).long()
-            assert len(self.length_list) == len(self.seq_list)
-            assert len(self.seq_list) == len(self.prop_list)
-            self.shuffled_idx = list(range(len(self.seq_list)))
-            random.shuffle(self.shuffled_idx)
-
-        def encode_smiles(self, smiles):
-            encoded_smiles = []
-            for smi in smiles:
-                encoded = [self.c_to_i[c] for c in smi]
-                encoded = torch.from_numpy(np.array(encoded))
-                encoded_smiles.append(encoded)
-            return encoded_smiles
-
-        def __len__(self):
-            return len(self.seq_list)
-
-        def __getitem__(self, idx):
-            idx = self.shuffled_idx[idx]
-            sample = dict()
-            sample['len'] = self.length_list[idx]
-            sample['seq'] = torch.tensor(self.seq_list[idx])
-            sample['prop'] = self.prop_list[idx]
-            if self.noisy:
-                l = sample['len']
-                noisy_num = int((l - 1) * args.noise_portion)
-                noisy_idx = np.random.choice(l - 1, noisy_num, replace=False)
-                sample['seq'][noisy_idx] = NOISE_IDX
-            return sample
-
-#    class MolDataset(Dataset):
-        
-#         def __init__(self, positive_list, negative_list, c_to_i):
-#             self.c_to_i = c_to_i
-#             self.positive_list = self.encode_smiles(positive_list)
-#             self.negative_list = self.encode_smiles(negative_list)
-#             encoded_smi_list = self.positive_list + self.negative_list
-#             self.prob_list = [1] * len(self.positive_list) + [0] * len(self.negative_list)
-#             self.length_list = []
-#             for sequence in encoded_smi_list:
-#                 self.length_list.append(len(sequence))
-#             self.length_list = torch.from_numpy(np.array(self.length_list))
-#             self.seq_list = encoded_smi_list
-#             self.prob_list = torch.tensor(self.prob_list).long()
-#             assert len(self.length_list) == len(self.seq_list)
-#             assert len(self.seq_list) == len(self.prob_list)
-#             self.shuffled_idx = list(range(len(self.seq_list)))
-#             random.shuffle(self.shuffled_idx)
-            
-
-#         def encode_smiles(self, smiles):
-#             encoded_smiles = []
-#             for smi in smiles:
-#                 encoded = [self.c_to_i[c] for c in smi]
-#                 encoded = torch.from_numpy(np.array(encoded))
-#                 encoded_smiles.append(encoded)
-#             return encoded_smiles
-
-#         def __len__(self):
-#             return len(self.seq_list)
-
-#         def __getitem__(self, idx):
-#             idx = self.shuffled_idx[idx]
-#             sample = dict()
-#             sample['len'] = self.length_list[idx]
-#             sample['seq'] = self.seq_list[idx]
-#             sample['prob'] = self.prob_list[idx]
-#             return sample
-
-#     def MaxLen(s, max_len):
-#         return len(s) <= max_len
-        
     ##### Preprocess #####
     def load_data(file_path, max_len):
         f = open(file_path, 'r')
@@ -232,14 +154,11 @@ def main(args):
         sample = dict()
         seq_batch = []
         len_batch = []
-        prop_batch = []
         for b in batch:
-            len_batch.append(b['len'])
-            seq_batch.append(b['seq'])
-            prop_batch.append(b['prop'])
+            len_batch.extend(b['len'])
+            seq_batch.extend(b['seq'])
         x = torch.nn.utils.rnn.pad_sequence(seq_batch,batch_first=True,padding_value=PAD_IDX)
         sample['len'] = torch.Tensor(len_batch).long()
-        sample['prop'] = torch.Tensor(prop_batch).long()
         sample['seq'] = x.long()
         return sample
 
@@ -270,10 +189,12 @@ def main(args):
     # with open('negative_list.pickle', 'wb') as f:
     #     pkl.dump(negative_list, f)
 
-    with open('training_data.pkl', 'rb') as f:
+    with open('unsup_data.pkl', 'rb') as f:
         data = pkl.load(f)
-    
-    train_data, train_label, val_data, val_label = data['train_data'], data['train_label'], data['val_data'], data['val_label']
+
+
+    train_data = data[:int(0.9 * len(data))]
+    val_data = data[int(0.9 * len(data)):]
 
     #max_padding(smi_list, max_len)     # not your own collate_fn
     c_to_i = get_c_to_i()
@@ -285,17 +206,18 @@ def main(args):
     print(f"index of token 'X':",c_to_i['X'])
     vocab_size = len(c_to_i)
 
-    train_data = MolDataset(train_data, train_label, c_to_i, noisy=True)
-    val_data = MolDataset(val_data, val_label, c_to_i) 
+    train_data = NoisyMolDataset(train_data, c_to_i)
+    val_data = NoisyMolDataset(val_data, c_to_i)
     # train_data = MolDataset(positive_list[:int(num_positive * 0.8)], negative_list[:int(num_negative * 0.8)], c_to_i)
     # val_data = MolDataset(positive_list[int(num_positive * 0.8):], negative_list[int(num_negative * 0.8):], c_to_i)
-    print(f'Training dataset with length {len(train_data)} constructed')
-    print(f'Validation dataset with length {len(val_data)} constructed')
+    print(f'Pretraining dataset with length {len(train_data)} constructed')
+
     # prepare data loader
     from torch.utils.data import DataLoader
+
     data_loaders = {}
     data_loaders['train'] = DataLoader(train_data, batch_size = 128, shuffle = True, collate_fn=my_collate)
-    data_loaders['val'] = DataLoader(val_data, batch_size = 128, shuffle = False, collate_fn=my_collate)
+    data_loaders['val'] = DataLoader(val_data, batch_size = 128, shuffle = True, collate_fn=my_collate)
 
 
     # 2. setup
@@ -332,8 +254,8 @@ def main(args):
     
     if not args.test:
         # train
-        args.logger.info("starting training")
-        val_loss_meter = AverageMeter(name="Acc-Val (%)", save_all=True, save_dir=os.path.join('results', args.name))
+        args.logger.info("starting pretraining")
+        val_loss_meter = AverageMeter(name="Val_Loss", save_all=True, save_dir=os.path.join('results', args.name))
         train_loss_meter = AverageMeter(name="Loss", save_all=True, save_dir=os.path.join('results', args.name))
         train_loader = data_loaders['train']
         valid_loader = data_loaders['val']
@@ -344,11 +266,12 @@ def main(args):
             train_loss_tmp_meter = AverageMeter()
             for data in tqdm(train_loader):
                 # src_batch: (batch x source_length), tgt_batch: (batch x target_length)
-                src_batch, length_batch, tgt_batch = data['seq'], data['len'], data['prop']
+                src_batch, length_batch = data['seq'], data['len']
                 optimizer.zero_grad()
-                src_batch, length_batch, tgt_batch = src_batch.to(args.device), length_batch.to(args.device), tgt_batch.to(args.device)
+                src_batch, length_batch = src_batch.to(args.device), length_batch.to(args.device)
                 batch = src_batch.shape[0]
-                pred = model(src_batch, length_batch)
+                tgt_batch = torch.arange(batch).view(-1, 2)[:, [1, 0]].flatten().cuda()   # batch
+                pred = model.project(src_batch, length_batch)
                 # print(f'shape: {src_batch.shape}, {length_batch.shape}, {tgt_batch.shape}, {pred.shape}')
                 loss = loss_fn(pred, tgt_batch)
                 loss.backward()
@@ -366,62 +289,25 @@ def main(args):
             spent_time = time.time()
 
             for data in tqdm(valid_loader):
-                src_batch, length_batch, tgt_batch = data['seq'], data['len'], data['prop']
-                src_batch, length_batch, tgt_batch = src_batch.to(args.device), length_batch.to(args.device), tgt_batch.to(args.device)
+                src_batch, length_batch = data['seq'], data['len']
+                optimizer.zero_grad()
+                src_batch, length_batch = src_batch.to(args.device), length_batch.to(args.device)
                 batch = src_batch.shape[0]
-      
+                tgt_batch = torch.arange(batch).view(-1, 2)[:, [1, 0]].flatten().cuda()   # batch
+            
                 with torch.no_grad():
-                    pred = model(src_batch, length_batch)
-
+                    pred = model.project(src_batch, length_batch)
                     loss = loss_fn(pred, tgt_batch)
                     val_loss_tmp_meter.update(loss, batch)
             
             spent_time = time.time() - spent_time
             args.logger.info("[{}] validation loss: {}, took {} seconds".format(epoch, val_loss_tmp_meter.avg, spent_time))
-            is_max, is_min = val_loss_meter.update(val_loss_tmp_meter.avg)
+            val_loss_meter.update(val_loss_tmp_meter.avg)
             
             if epoch % args.save_period == 0:
                 save(args, "epoch_{}".format(epoch), model.state_dict())
                 val_loss_meter.save()
                 train_loss_meter.save()
-            
-            if is_min:
-                save(args, 'best', model.state_dict())
-                args.logger.info(f'Best checkpoint at epoch {epoch} saved')
-
-    else:
-        args.logger.info("starting testing")
-        val_loss_meter = AverageMeter(name="Acc-Val (%)", save_all=True, save_dir=os.path.join('results', args.name))
-        train_loss_meter = AverageMeter(name="Loss", save_all=True, save_dir=os.path.join('results', args.name))
-        train_loader = data_loaders['train']
-        valid_loader = data_loaders['val']
-        model.eval()
-        val_loss_tmp_meter = AverageMeter()
-        spent_time = time.time()
-        preds = []
-        labels = []
-        for data in tqdm(valid_loader):
-            src_batch, length_batch, tgt_batch = data['seq'], data['len'], data['prop']
-            src_batch, length_batch, tgt_batch = src_batch.to(args.device), length_batch.to(args.device), tgt_batch.to(args.device)
-            batch = src_batch.shape[0]
-    
-            with torch.no_grad():
-                pred = model(src_batch, length_batch)
-                loss = loss_fn(pred, tgt_batch)
-                val_loss_tmp_meter.update(loss, batch)
-
-            pred_label = nn.Softmax(dim=1)(pred)[:, 1].detach().cpu().numpy()
-            tgt_batch = tgt_batch.detach().cpu().numpy()
-            for p in pred_label:
-                preds.append(p)
-            for l in tgt_batch:
-                labels.append(l)
-
-        spent_time = time.time() - spent_time
-        args.logger.info("[{}] validation loss: {}, took {} seconds".format(0, val_loss_tmp_meter.avg, spent_time))
-        accuracy, precision, auroc, score = calc_model_score(preds, labels)
-        args.logger.info(f'Accuracy, Precision, AUROC, Score: {accuracy}, {precision}, {auroc}, {score}')
-
 
 if __name__ == '__main__':
     # set args

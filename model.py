@@ -62,7 +62,10 @@ class Transformer(nn.Module):
         # print('output: {}'.format(output.shape))
         output = output[torch.arange(batch).cuda(), length - 1]
         # print('output: {}'.format(output.shape))
-        output = self.projector(output)                         # (batch x d_e) 
+        output = self.projector(output)                         # (batch x d_e)
+        output = output @ output.t()                            # (batch x batch)
+        output = output / args.temperature
+        output[range(len(output)), range(len(output))] = 1e-9
         return output
 
 class Encoder(nn.Module):
