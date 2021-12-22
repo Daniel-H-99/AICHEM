@@ -1,4 +1,4 @@
-# Smile BERT Classifier of HIV Effectives
+# Smile BERT Classifier on HIV Effectives
 This is a repository for implentation of BERT based classifer working on SMILES.
 Architecture resembles one explained in paper.
 Several noticeable points are:
